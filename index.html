@@ -258,6 +258,15 @@
       background: rgba(18, 18, 18, 0.86); border: 1px solid var(--border);
       color: #ffffff; font-size: 12px; font-weight: 700;
     }
+    .badge-btn {
+      pointer-events: auto; cursor: pointer;
+      font-family: inherit;
+    }
+    .badge-btn.auto-on {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(255, 193, 7, 0.25);
+    }
+    .badge-btn:active { transform: scale(0.96); }
     body.day .badge { background: rgba(242, 242, 242, 0.92); color: #000000; }
 
     .poi-toast {
@@ -628,7 +637,7 @@
 
         <div class="canvas-overlay-top">
           <div id="headingBadge" class="badge">Suund: 0° (Põhi)</div>
-          <div id="scaleBadge" class="badge">AUTO · 250 m</div>
+          <button id="scaleBadge" class="badge badge-btn auto-on" type="button" title="Puuduta automaatse suumi lülitamiseks">AUTO · 90 m</button>
         </div>
 
         <div id="poiToast" class="poi-toast"></div>
@@ -1310,6 +1319,7 @@
         view3d: false,
         pitchFactor: 0,
         autoZoom: true,
+        autoZoomUserOff: false,
         followGps: true,
         viewCenter: null,
         isInteracting: false,
@@ -1317,9 +1327,9 @@
         dayMode: false,
         wakeLock: null,
         zoomLevels: [30, 50, 75, 110, 175, 300, 500, 800, 1500, 3000, 6000, 15000, 40000, 100000, 250000, 500000, 1000000],
-        zoomIndex: 4,
-        radarRadiusM: 175,
-        targetRadiusM: 175,
+        zoomIndex: 3,
+        radarRadiusM: 90,
+        targetRadiusM: 90,
         currentTileZ: null,
         canvasW: 0,
         canvasH: 0,
@@ -1335,7 +1345,7 @@
 
         gps: {
           lat: null, lon: null, accuracy: null, speedMps: null, rawSpeedMps: 0, smoothSpeedKmh: 0,
-          gpsHeading: null, prevPos: null, prevPosTs: 0, derivedHeading: null,
+          gpsHeading: null, prevPos: null, prevPosTs: 0, prevPosPerf: 0, derivedHeading: null,
           lastMoveMs: 0, fixWallMs: 0, lastFixIntervalMs: 1000,
           renderPos: null, blendOffsetLat: 0, blendOffsetLon: 0, blendStartMs: 0,
           compassHeading: null, watchId: null, watchdogId: null,
@@ -1425,7 +1435,11 @@
         state.viewCenter = null;
         el.recenterBtn.classList.remove("show");
         updateMgrsBar();
-        if (state.autoZoom) state.targetRadiusM = computeAutoZoomTarget();
+        if (!state.autoZoomUserOff) {
+          setAutoZoomMode(true, false);
+        } else if (state.autoZoom) {
+          state.targetRadiusM = computeAutoZoomTarget();
+        }
         fetchNearbyRoads(false);
         state.needsRedraw = true;
       }
@@ -1520,20 +1534,21 @@
       function computeAutoZoomTarget() {
         const kmh = state.gps.smoothSpeedKmh || 0;
         let target;
-        if (kmh <= 15) target = 150;
-        else if (kmh <= 45) target = 150 + ((kmh - 15) / 30) * 150;
-        else if (kmh <= 70) target = 300 + ((kmh - 45) / 25) * 450;
-        else if (kmh <= 95) target = 750 + ((kmh - 70) / 25) * 600;
-        else if (kmh <= 120) target = 1350 + ((kmh - 95) / 25) * 650;
-        else target = 2000;
+        if (kmh <= 10) target = 90;
+        else if (kmh <= 30) target = 90 + ((kmh - 10) / 20) * 90;       // 90 m -> 180 m
+        else if (kmh <= 55) target = 180 + ((kmh - 30) / 25) * 240;     // 180 m -> 420 m (linnasõit)
+        else if (kmh <= 75) target = 420 + ((kmh - 55) / 20) * 380;     // 420 m -> 800 m
+        else if (kmh <= 100) target = 800 + ((kmh - 75) / 25) * 650;    // 800 m -> 1450 m (maantee)
+        else if (kmh <= 130) target = 1450 + ((kmh - 100) / 30) * 750;  // 1450 m -> 2200 m (kiirtee)
+        else target = 2200;
 
         if (state.route && !state.offRoute && Number.isFinite(state.distToNextTurnM)) {
           const d = state.distToNextTurnM;
-          if (d <= 150) target = Math.min(target, 140);
-          else if (d <= 350) target = Math.min(target, 140 + ((d - 150) / 200) * 110);
-          else if (d <= 600) target = Math.min(target, 250 + ((d - 350) / 250) * 150);
+          if (d <= 120) target = Math.min(target, 85);
+          else if (d <= 350) target = Math.min(target, 85 + ((d - 120) / 230) * 155);
+          else if (d <= 650) target = Math.min(target, 240 + ((d - 350) / 300) * 240);
         }
-        return Math.round(Math.max(120, Math.min(2000, target)));
+        return Math.round(Math.max(80, Math.min(2200, target)));
       }
 
       function updateScaleBadge() {
@@ -1550,13 +1565,25 @@
           state.lastScaleText = txt;
           el.scaleBadge.textContent = txt;
         }
+        el.scaleBadge.classList.toggle("auto-on", state.autoZoom);
       }
 
-      function setAutoZoomMode(enabled) {
-        state.autoZoom = enabled;
-        el.autoZoomBtn.textContent = enabled ? "SUUM: AUTO" : "SUUM: KÄSI";
-        el.autoZoomBtn.classList.toggle("active", enabled);
-        if (enabled) state.targetRadiusM = computeAutoZoomTarget();
+      function setAutoZoomMode(enabled, isExplicit) {
+        state.autoZoom = Boolean(enabled);
+        if (state.autoZoom) {
+          state.autoZoomUserOff = false;
+          if (!state.followGps && hasValidGps()) {
+            state.followGps = true;
+            state.viewCenter = null;
+            el.recenterBtn.classList.remove("show");
+            updateMgrsBar();
+          }
+          state.targetRadiusM = computeAutoZoomTarget();
+        } else if (isExplicit) {
+          state.autoZoomUserOff = true;
+        }
+        el.autoZoomBtn.textContent = state.autoZoom ? "SUUM: AUTO" : "SUUM: KÄSI";
+        el.autoZoomBtn.classList.toggle("active", state.autoZoom);
         updateScaleBadge();
         state.needsRedraw = true;
       }
@@ -1565,7 +1592,7 @@
         const clamped = Math.max(25, Math.min(1000000, radiusM));
         state.targetRadiusM = clamped;
         state.zoomIndex = findNearestZoomIndex(clamped);
-        setAutoZoomMode(false);
+        setAutoZoomMode(false, false);
         updatePoiRadiusButtons();
         if (!skipPoiFetch && state.pois.activeCatId) {
           fetchPois(clamped > state.pois.radiusM);
@@ -4009,8 +4036,10 @@
 
         if (state.gps.prevPos) {
           const movedM = distanceMeters(state.gps.prevPos, coord);
-          const dtSec = (nowMs - state.gps.prevPosTs) / 1000;
-          if (movedM >= 4) {
+          const dtTsSec = (nowMs - state.gps.prevPosTs) / 1000;
+          const dtPerfSec = state.gps.prevPosPerf > 0 ? (nowPerf - state.gps.prevPosPerf) / 1000 : 0;
+          const dtSec = (dtTsSec >= 0.25 && dtTsSec <= 15) ? dtTsSec : dtPerfSec;
+          if (movedM >= 3) {
             const newBrg = bearingDegrees(state.gps.prevPos, coord);
             if (state.gps.derivedHeading === null) state.gps.derivedHeading = newBrg;
             else {
@@ -4018,17 +4047,19 @@
               const brgAlpha = movedM >= 15 ? 0.7 : 0.45;
               state.gps.derivedHeading = (state.gps.derivedHeading + d * brgAlpha + 360) % 360;
             }
-            const minDeriveMove = acc !== null ? Math.max(4, acc * 0.35) : 5;
-            if ((acc === null || acc <= 45) && dtSec >= 0.35 && dtSec <= 15 && movedM >= minDeriveMove) {
+            const minDeriveMove = acc !== null ? Math.max(3, acc * 0.30) : 4;
+            if ((acc === null || acc <= 55) && dtSec >= 0.25 && dtSec <= 15 && movedM >= minDeriveMove) {
               derivedSpeedKmh = Math.min(220, (movedM / dtSec) * 3.6);
             }
             state.gps.lastMoveMs = Date.now();
             state.gps.prevPos = coord;
             state.gps.prevPosTs = nowMs;
+            state.gps.prevPosPerf = nowPerf;
           }
         } else {
           state.gps.prevPos = coord;
           state.gps.prevPosTs = nowMs;
+          state.gps.prevPosPerf = nowPerf;
         }
 
         const wasEmpty = !hasValidGps();
@@ -4036,21 +4067,29 @@
         state.gps.lon = coord.lon;
         state.gps.fixWallMs = nowPerf;
         state.gps.accuracy = acc;
-        state.gps.speedMps = (position.coords.speed !== null && Number.isFinite(position.coords.speed))
-          ? Math.max(0, parseFloat(position.coords.speed)) : null;
-        state.gps.gpsHeading = (position.coords.heading !== null && Number.isFinite(position.coords.heading))
-          ? parseFloat(position.coords.heading) : null;
+        // Negatiivne coords.speed/heading (nt iOS CoreLocation -1) tähendab puuduvat näitu, mitte 0!
+        const parsedSpeed = (position.coords.speed !== null && position.coords.speed !== undefined)
+          ? parseFloat(position.coords.speed) : NaN;
+        state.gps.speedMps = (Number.isFinite(parsedSpeed) && parsedSpeed >= 0) ? parsedSpeed : null;
+        const parsedHdg = (position.coords.heading !== null && position.coords.heading !== undefined)
+          ? parseFloat(position.coords.heading) : NaN;
+        state.gps.gpsHeading = (Number.isFinite(parsedHdg) && parsedHdg >= 0) ? parsedHdg : null;
 
-        let rawKmh = state.gps.speedMps !== null
-          ? state.gps.speedMps * 3.6
-          : (derivedSpeedKmh !== null ? derivedSpeedKmh : (Date.now() - state.gps.lastMoveMs > 4000 ? 0 : state.gps.smoothSpeedKmh));
+        let rawKmh;
+        if (state.gps.speedMps !== null && (state.gps.speedMps >= 0.5 || derivedSpeedKmh === null || derivedSpeedKmh < 7)) {
+          rawKmh = state.gps.speedMps * 3.6;
+        } else if (derivedSpeedKmh !== null) {
+          rawKmh = derivedSpeedKmh;
+        } else {
+          rawKmh = (Date.now() - state.gps.lastMoveMs > 4000) ? 0 : state.gps.smoothSpeedKmh;
+        }
         if (rawKmh < 2.2) rawKmh = 0;
-        const spdAlpha = rawKmh < state.gps.smoothSpeedKmh ? 0.5 : 0.35;
+        const spdAlpha = rawKmh < state.gps.smoothSpeedKmh ? 0.5 : 0.4;
         state.gps.smoothSpeedKmh = state.gps.smoothSpeedKmh + (rawKmh - state.gps.smoothSpeedKmh) * spdAlpha;
         if (state.gps.smoothSpeedKmh < 1) state.gps.smoothSpeedKmh = 0;
         state.gps.rawSpeedMps = rawKmh / 3.6;
 
-        if (state.gps.speedMps !== null && state.gps.speedMps >= 1.0 && state.gps.gpsHeading !== null) {
+        if (rawKmh >= 3.6) {
           state.gps.lastMoveMs = Date.now();
         }
         state.gps.status = "ok";
@@ -4235,6 +4274,10 @@
           state.ctaDismissed = false;
           updateGpsUI();
         } else {
+          state.followGps = true;
+          state.viewCenter = null;
+          el.recenterBtn.classList.remove("show");
+          if (!state.autoZoomUserOff) setAutoZoomMode(true, false);
           calculateRoute();
         }
       }
@@ -7083,6 +7126,20 @@
           }
         }
 
+        // Kui sõiduk peatub ja telefon lõpetab GPS-i uuenduste saatmise (>4.5 s),
+        // langeta sujuv kiirus 0-ni, et auto-suum suumiks ristmikul tagasi sisse
+        if (hasValidGps() && state.gps.fixWallMs > 0 && state.gps.smoothSpeedKmh > 0 && (ts - state.gps.fixWallMs) > 4500) {
+          state.gps.smoothSpeedKmh *= Math.exp(-1.8 * dtSec);
+          if (state.gps.smoothSpeedKmh < 1) {
+            state.gps.smoothSpeedKmh = 0;
+            state.gps.rawSpeedMps = 0;
+          }
+          const decKmh = Math.round(state.gps.smoothSpeedKmh);
+          if (el.speedVal && el.speedVal.textContent !== String(decKmh)) {
+            el.speedVal.textContent = String(decKmh);
+          }
+        }
+
         if (state.followGps || state.orientMode === "north") {
           const targetHdg = getActiveHeading().deg;
           const hDiff = shortestAngleDelta(state.displayHeading, targetHdg);
@@ -7096,8 +7153,11 @@
         }
 
         if (!state.isInteracting) {
+          if (state.autoZoom && state.followGps) {
+            state.targetRadiusM = computeAutoZoomTarget();
+          }
           const rDiff = state.targetRadiusM - state.radarRadiusM;
-          if (Math.abs(rDiff) > Math.max(2, state.targetRadiusM * 0.008)) {
+          if (Math.abs(rDiff) > Math.max(1.5, state.targetRadiusM * 0.006)) {
             const rFactor = 1 - Math.exp(-3.6 * dtSec);
             state.radarRadiusM += rDiff * rFactor;
             state.needsRedraw = true;
@@ -7491,10 +7551,14 @@
         }
       });
 
-      el.autoZoomBtn.addEventListener("click", () => {
-        setAutoZoomMode(!state.autoZoom);
+      function toggleAutoZoomByUser() {
+        setAutoZoomMode(!state.autoZoom, true);
         addLog("Automaatne suum: " + (state.autoZoom ? "SEES" : "VÄLJAS"));
-      });
+        showToast(state.autoZoom ? "Automaatne suum: SEES" : "Suum: KÄSI", 1800);
+      }
+
+      el.autoZoomBtn.addEventListener("click", toggleAutoZoomByUser);
+      el.scaleBadge.addEventListener("click", toggleAutoZoomByUser);
 
       el.orientBtn.addEventListener("click", () => {
         const order = ["heading", "gps_only", "north"];
