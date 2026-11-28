@@ -597,7 +597,7 @@
         <span id="gpsSummary">GPS: ootel</span>
       </button>
       <button id="searchToggleBtn" class="icon-btn" type="button" aria-expanded="false" title="Ava või peida otsing">OTSI</button>
-      <button id="wakeBtn" class="icon-btn" type="button">ÄRKVEL</button>
+      <button id="wakeBtn" class="icon-btn" type="button" aria-pressed="false" title="Hoia ekraan ärkvel">ÄRKVEL</button>
       <button id="soundBtn" class="icon-btn active" type="button">HELI</button>
       <button id="themeBtn" class="icon-btn" type="button">ÖÖ</button>
     </div>
@@ -1326,6 +1326,8 @@
         soundOn: true,
         dayMode: false,
         wakeLock: null,
+        wakeDesired: false,
+        wakeBusy: false,
         zoomLevels: [30, 50, 75, 110, 175, 300, 500, 800, 1500, 3000, 6000, 15000, 40000, 100000, 250000, 500000, 1000000],
         zoomIndex: 3,
         radarRadiusM: 90,
@@ -7452,23 +7454,100 @@
         }
       }
 
-      async function toggleWakeLock() {
-        if (!("wakeLock" in navigator)) {
-          addLog("Wake Lock puudub");
-          alert("See brauser ei toeta Wake Lock API-t.");
-          return;
+      function isWakeLockActive() {
+        return Boolean(state.wakeLock && !state.wakeLock.released);
+      }
+
+      function updateWakeBtnUI() {
+        const active = isWakeLockActive();
+        el.wakeBtn.classList.toggle("active", active);
+        el.wakeBtn.setAttribute("aria-pressed", active ? "true" : "false");
+        el.wakeBtn.title = active
+          ? "Ekraan hoitakse ärkvel (puuduta väljalülitamiseks)"
+          : "Hoia ekraan ärkvel";
+      }
+
+      async function requestScreenWakeLock(silent) {
+        if (!("wakeLock" in navigator) || !navigator.wakeLock || typeof navigator.wakeLock.request !== "function") {
+          state.wakeDesired = false;
+          updateWakeBtnUI();
+          addLog("Wake Lock API puudub");
+          if (!silent) {
+            showToast("See brauser ei toeta ekraani ärkvel hoidmist", 2800);
+          }
+          return false;
+        }
+        if (isWakeLockActive()) {
+          updateWakeBtnUI();
+          return true;
         }
         try {
-          if (state.wakeLock) {
-            await state.wakeLock.release();
-            state.wakeLock = null;
-            el.wakeBtn.classList.remove("active");
-          } else {
-            state.wakeLock = await navigator.wakeLock.request("screen");
-            el.wakeBtn.classList.add("active");
+          const sentinel = await navigator.wakeLock.request("screen");
+          // Kui kasutaja lülitas vahepeal välja enne lubaduse lahenemist, vabasta kohe
+          if (!state.wakeDesired) {
+            try { await sentinel.release(); } catch (_) {}
+            updateWakeBtnUI();
+            return false;
           }
+          state.wakeLock = sentinel;
+          sentinel.addEventListener("release", () => {
+            if (state.wakeLock === sentinel) {
+              state.wakeLock = null;
+            }
+            updateWakeBtnUI();
+            addLog("Ekraanilukk vabastati");
+          });
+          updateWakeBtnUI();
+          addLog(silent ? "Ekraanilukk taastati" : "Ekraanilukk aktiveeriti");
+          if (!silent) {
+            showToast("Ekraan hoitakse ärkvel", 1800);
+          }
+          return true;
         } catch (e) {
-          addLog("Wake Lock viga: " + e.message);
+          state.wakeLock = null;
+          updateWakeBtnUI();
+          const errName = e && e.name ? e.name : "";
+          const errMsg = e && e.message ? e.message : String(e);
+          addLog("Wake Lock viga: " + (errName ? errName + ": " : "") + errMsg);
+          if (!silent) {
+            state.wakeDesired = false;
+            if (!window.isSecureContext) {
+              showToast("ÄRKVEL vajab turvalist HTTPS-ühendust", 3000);
+            } else if (errName === "NotAllowedError") {
+              showToast("Ekraanilukk keelati (kontrolli akusäästurežiimi)", 3000);
+            } else {
+              showToast("Ekraaniluku viga: " + errMsg, 2600);
+            }
+          }
+          return false;
+        }
+      }
+
+      async function releaseScreenWakeLock(silent) {
+        state.wakeDesired = false;
+        const sentinel = state.wakeLock;
+        state.wakeLock = null;
+        if (sentinel && !sentinel.released) {
+          try { await sentinel.release(); } catch (_) {}
+        }
+        updateWakeBtnUI();
+        if (!silent) {
+          showToast("Ekraan: tavaline unerežiim", 1800);
+        }
+      }
+
+      async function toggleWakeLock() {
+        if (state.wakeBusy) return;
+        state.wakeBusy = true;
+        try {
+          if (state.wakeDesired && isWakeLockActive()) {
+            await releaseScreenWakeLock(false);
+          } else {
+            state.wakeDesired = true;
+            await requestScreenWakeLock(false);
+          }
+        } finally {
+          state.wakeBusy = false;
         }
       }
 
@@ -7940,11 +8019,24 @@
         initOpenFreeMapTileJson();
         addLog("Võrguühendus taastus — aluskaardid laetakse uuesti");
       });
+      async function reacquireWakeLockIfNeeded() {
+        if (document.hidden || !state.wakeDesired || isWakeLockActive() || state.wakeBusy) return;
+        state.wakeBusy = true;
+        try {
+          await requestScreenWakeLock(true);
+        } finally {
+          state.wakeBusy = false;
+        }
+      }
       document.addEventListener("visibilitychange", () => {
         if (!document.hidden) {
           resetFailedTiles(false);
           state.needsRedraw = true;
+          reacquireWakeLockIfNeeded();
         }
+      });
+      window.addEventListener("focus", () => {
+        reacquireWakeLockIfNeeded();
       });
 
       addLog(`Käivitamine (${window.location.protocol}//${window.location.host || "kohalik"})`);
